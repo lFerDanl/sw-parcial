@@ -85,6 +85,44 @@ export class DiagramGateway implements OnGatewayInit, OnGatewayConnection, OnGat
   }
 
   // ---------------------------
+  // Generar diagrama desde prompt
+  // ---------------------------
+  @SubscribeMessage('diagram:generateFromPrompt')
+  async handleGenerateFromPrompt(
+    client: Socket,
+    payload: { diagramId: number; prompt: string }
+  ) {
+    const { diagramId, prompt } = payload;
+    const user = (client as any).user;
+
+    try {
+      // Generar el diagrama
+      const updatedDiagram = await this.diagramsService.generateDiagramFromPrompt(
+        diagramId,
+        prompt,
+        { id: user.sub } as any
+      );
+
+      // Emitir el nuevo contenido a todos los clientes conectados
+      this.server.to(`diagram:${diagramId}`).emit('diagram:generated', {
+        content: updatedDiagram.content,
+        generatedBy: client.id,
+      });
+
+      // También enviar al cliente que lo solicitó
+      client.emit('diagram:generated', {
+        content: updatedDiagram.content,
+        generatedBy: client.id,
+      });
+
+    } catch (error) {
+      client.emit('diagram:generateError', {
+        error: error.message || 'Error al generar el diagrama'
+      });
+    }
+  }
+
+  // ---------------------------
   // Movimiento de elementos en tiempo real
   // ---------------------------
 
@@ -261,26 +299,53 @@ export class DiagramGateway implements OnGatewayInit, OnGatewayConnection, OnGat
     }
   ) {
     const user = (client as any).user;
-    await this.diagramsService.updateRelation(payload.diagramId, payload.relationId, payload.data, { id: user.sub } as any);
+    
+    try {
+      await this.diagramsService.updateRelation(
+        payload.diagramId, 
+        payload.relationId, 
+        payload.data, 
+        { id: user.sub } as any
+      );
   
-    // Emit a todos excepto al que envió
-    client.to(`diagram:${payload.diagramId}`).emit('relation:update', {
-      clientId: client.id,
-      relationId: payload.relationId,
-      data: payload.data,
-    });
+      // Solo emitir si se actualizó exitosamente
+      client.to(`diagram:${payload.diagramId}`).emit('relation:update', {
+        clientId: client.id,
+        relationId: payload.relationId,
+        data: payload.data,
+      });
+    } catch (error) {
+      // ✅ Log pero no crashear
+      console.warn(`Could not update relation ${payload.relationId}:`, error.message);
+      // No emitir error al cliente
+    }
   }
 
-  @SubscribeMessage('relation:remove')
-  async handleRemoveRelation(client: Socket, payload: { diagramId: number; relationId: string }) {
-    const user = (client as any).user;
-    await this.diagramsService.removeRelation(payload.diagramId, payload.relationId, { id: user.sub } as any);
+@SubscribeMessage('relation:remove')
+async handleRemoveRelation(
+  client: Socket, 
+  payload: { diagramId: number; relationId: string }
+) {
+  const user = (client as any).user;
+  
+  try {
+    await this.diagramsService.removeRelation(
+      payload.diagramId, 
+      payload.relationId, 
+      { id: user.sub } as any
+    );
 
+    // Solo emitir si se eliminó exitosamente
     client.to(`diagram:${payload.diagramId}`).emit('relation:remove', {
       clientId: client.id,
       relationId: payload.relationId,
     });
+  } catch (error) {
+    // ✅ Log pero no crashear
+    console.warn(`Could not remove relation ${payload.relationId}:`, error.message);
+    // No emitir error al cliente
   }
+}
 
 
 }

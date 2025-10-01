@@ -1,5 +1,6 @@
 // src/diagrams/diagrams.controller.ts
-import { Controller, Get, Post, Body, Param, Delete, Put, UseGuards, Patch } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Delete, Put, UseGuards, Patch, Query, Res } from '@nestjs/common';
+import { Response } from 'express';
 import { DiagramsService } from './diagrams.service';
 import { CreateDiagramDto } from './dto/create-diagram.dto';
 import { UpdateDiagramDto } from './dto/update-diagram.dto';
@@ -7,7 +8,7 @@ import { Auth } from 'src/auth/decorator/auth.decorators';
 import { Role } from 'src/common/enums/role.enum';
 import { ActiveUser } from 'src/common/decorator/active-user.decorator';
 import { ActiveUserInterface } from 'src/common/interfaces/active-user.interface';
-import { ApiBearerAuth, ApiBody } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiBody, ApiQuery } from '@nestjs/swagger';
 
 @ApiBearerAuth()
 @Controller('diagrams')
@@ -61,6 +62,48 @@ export class DiagramsController {
     @ActiveUser() user: ActiveUserInterface,
   ) {
     return this.diagramsService.shareDiagram(id, userId, { id: user.sub } as any);
+  }
+
+  @Post(':id/generate-from-prompt')
+  async generateFromPrompt(
+    @Param('id') id: number,
+    @Body() body: { prompt: string },
+    @ActiveUser() user: ActiveUserInterface,
+  ) {
+    console.log('Generating diagram from prompt Controller:', body.prompt);
+    return this.diagramsService.generateDiagramFromPrompt(
+      id, 
+      body.prompt, 
+      { id: user.sub } as any
+    );
+  }
+
+  @Post(':id/generate-code')
+  @ApiQuery({ name: 'projectName', required: false })
+  @ApiQuery({ name: 'basePackage', required: false })
+  async generateSpringBootCode(
+    @Param('id') id: number,
+    @Query('projectName') projectName: string,
+    @Query('basePackage') basePackage: string,
+    @ActiveUser() user: ActiveUserInterface,
+    @Res() res: Response,
+  ) {
+    const zipBuffer = await this.diagramsService.generateSpringBootCode(
+      id,
+      { id: user.sub } as any,
+      projectName,
+      basePackage
+    );
+
+    const filename = projectName || `diagram-${id}-springboot`;
+    
+    res.set({
+      'Content-Type': 'application/zip',
+      'Content-Disposition': `attachment; filename="${filename}.zip"`,
+      'Content-Length': zipBuffer.length,
+    });
+
+    res.send(zipBuffer);
   }
 
 }

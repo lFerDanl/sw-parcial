@@ -6,6 +6,8 @@ import { Diagram } from './entities/diagram.entity';
 import { CreateDiagramDto } from './dto/create-diagram.dto';
 import { User } from 'src/users/entities/user.entity';
 import { UpdateDiagramDto } from './dto/update-diagram.dto';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import { CodeGenerationService } from './code-generation.service';
 
 @Injectable()
 export class DiagramsService {
@@ -14,6 +16,7 @@ export class DiagramsService {
     private readonly diagramsRepository: Repository<Diagram>,
     @InjectRepository(User)
     private readonly usersRepository: Repository<User>,
+    private readonly codeGenerationService: CodeGenerationService,
   ) { }
 
   async create(createDiagramDto: CreateDiagramDto, user: User) {
@@ -63,6 +66,8 @@ export class DiagramsService {
     const diagram = await this.findOne(id, user);
     return this.diagramsRepository.softRemove(diagram);
   }
+
+  
 
   async shareDiagram(diagramId: number, userId: number, owner: User) {
     const diagram = await this.findOne(diagramId, owner);
@@ -226,9 +231,13 @@ export class DiagramsService {
     user: User,
   ) {
     const diagram = await this.findOne(diagramId, user);
+    
+    // ✅ Verificar si existe antes de intentar actualizar
     if (!diagram.content.relations?.[relationId]) {
-      throw new Error('Relation not found');
+      console.warn(`Relation ${relationId} not found for update, may have been removed`);
+      return diagram; // Retornar sin error
     }
+    
     diagram.content.relations[relationId] = {
       ...diagram.content.relations[relationId],
       ...relationData,
@@ -241,10 +250,113 @@ export class DiagramsService {
   // --------------------------------------
   async removeRelation(diagramId: number, relationId: string, user: User) {
     const diagram = await this.findOne(diagramId, user);
+    
+    // ✅ Verificar si existe antes de intentar eliminar
     if (!diagram.content.relations?.[relationId]) {
-      throw new Error('Relation not found');
+      console.warn(`Relation ${relationId} already removed or doesn't exist`);
+      return diagram; // Retornar sin error
     }
+    
     delete diagram.content.relations[relationId];
     return this.diagramsRepository.save(diagram);
+  }
+  
+  async generateDiagramFromPrompt(
+    diagramId: number,
+    prompt: string,
+    user: User,
+  ): Promise<Diagram> {
+    console.log('Generating diagram from prompt:', prompt);
+    const diagram = await this.findOne(diagramId, user);
+    
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY??'');
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+  
+    const systemPrompt = this.buildDiagramPrompt(prompt);
+    
+    const result = await model.generateContent(systemPrompt);
+    const text = result.response.text();
+  
+    const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/) || 
+                      text.match(/{[\s\S]*}/);
+    
+    if (!jsonMatch) {
+      throw new Error('No se pudo extraer JSON de la respuesta');
+    }
+  
+    const generatedContent = JSON.parse(
+      jsonMatch[0].startsWith('{') ? jsonMatch[0] : jsonMatch[1]
+    );
+
+    console.log('Generated Diagram Content:', JSON.stringify(generatedContent, null, 2));
+  
+    diagram.content = generatedContent;
+    return this.diagramsRepository.save(diagram);
+  }
+  
+  private buildDiagramPrompt(userPrompt: string): string {
+    return `
+  Genera un diagrama de clases UML en formato JSON basado en: "${userPrompt}"
+  
+  El JSON debe tener esta estructura exacta:
+  {
+    "elements": {
+      "classX": {
+        "name": "NombreClase",
+        "position": { "x": número, "y": número },
+        "attributes": [
+          { "name": "id", "type": "Long" },          // Siempre incluir ID
+          { "name": "nombreAtributo", "type": "TipoDato" }
+        ]
+      }
+    },
+    "relations": {
+      "relX": {
+        "from": "classId",
+        "to": "classId",
+        "type": "OneToMany" | "ManyToOne" | "ManyToMany" | "OneToOne" | "Inheritance" | "Aggregation" | "Composition",
+        "vertices": [{ "x": número, "y": número }],
+        "labels": [{ "position": 0.5, "text": "de nuevo el type" }],
+        "attrs": { "line": { "stroke": "#444", "strokeWidth": 2 } },
+        "router": { "name": "manhattan" },
+        "connector": { "name": "rounded" }
+      }
+    }
+  }
+  
+  Reglas:
+  - Cada clase debe tener obligatoriamente un atributo "id" de tipo Long como clave primaria.
+  - Usa IDs únicos aleatorios (ej: "class1", "class2", "rel1")
+  - Posiciona las clases de forma organizada (separación de ~300px)
+  - Incluye atributos relevantes con tipos de datos apropiados
+  - Los tipos de datos de los atributos deben ser solo uno de los siguientes: String, Integer, Long, Double, Float, Boolean, Date, LocalDate, LocalDateTime, BigDecimal
+  - Define relaciones lógicas entre clases
+  - Los vértices deben estar entre las clases conectadas
+  
+  Responde SOLO con el JSON, sin texto adicional.
+  `;
+  }
+  
+
+  async generateSpringBootCode(
+    diagramId: number,
+    user: User,
+    projectName?: string,
+    basePackage?: string
+  ): Promise<Buffer> {
+    const diagram = await this.findOne(diagramId, user);
+    
+    if (!diagram.content || !diagram.content.elements) {
+      throw new Error('El diagrama no tiene contenido válido');
+    }
+
+    const projectNameFinal = projectName || diagram.name.toLowerCase().replace(/\s+/g, '-');
+    const basePackageFinal = basePackage || 'com.example.demo';
+
+    return this.codeGenerationService.generateSpringBootProject(
+      diagram.content as DiagramContent,
+      projectNameFinal,
+      basePackageFinal
+    );
   }
 }
